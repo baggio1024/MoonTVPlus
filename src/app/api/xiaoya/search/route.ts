@@ -4,13 +4,12 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthInfoFromCookie } from '@/lib/auth';
 import { getConfig } from '@/lib/config';
-import { XiaoyaClient } from '@/lib/xiaoya.client';
 
 export const runtime = 'nodejs';
 
 /**
- * GET /api/xiaoya/search?keyword=<keyword>&page=<page>
- * 搜索小雅视频
+ * GET /api/xiaoya/search?keyword=<keyword>&type=<type>
+ * 搜索小雅视频（使用小雅的网页搜索引擎）
  */
 export async function GET(request: NextRequest) {
   try {
@@ -21,7 +20,7 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
     const keyword = searchParams.get('keyword');
-    const page = parseInt(searchParams.get('page') || '1');
+    const type = searchParams.get('type') || 'video'; // video, music, ebook, all
 
     if (!keyword) {
       return NextResponse.json({ error: '缺少搜索关键词' }, { status: 400 });
@@ -38,34 +37,59 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '小雅未配置或未启用' }, { status: 400 });
     }
 
-    const client = new XiaoyaClient(
-      xiaoyaConfig.ServerURL,
-      xiaoyaConfig.Username,
-      xiaoyaConfig.Password,
-      xiaoyaConfig.Token
-    );
+    // 使用小雅的搜索引擎
+    const searchUrl = `${xiaoyaConfig.ServerURL}/search?box=${encodeURIComponent(keyword)}&type=${type}&url=`;
 
-    const result = await client.search(keyword, page, 50);
+    const response = await fetch(searchUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      },
+    });
 
-    // 只返回视频文件
-    const videoExtensions = ['.mp4', '.mkv', '.avi', '.m3u8', '.flv', '.ts', '.mov', '.wmv', '.webm'];
+    if (!response.ok) {
+      throw new Error(`搜索请求失败: ${response.status}`);
+    }
 
-    const videos = result.content
-      .filter(item =>
-        !item.is_dir &&
-        videoExtensions.some(ext => item.name.toLowerCase().endsWith(ext))
-      )
-      .map(item => ({
-        name: item.name,
-        path: item.name, // Alist 搜索返回的是完整路径
-      }));
+    const html = await response.text();
+
+    // 解析 HTML 中的链接
+    // 格式: <a href=/path/to/file>path/to/file</a>
+    const linkRegex = /<a href=([^>]+)>([^<]+)<\/a>/g;
+    const results: Array<{ name: string; path: string }> = [];
+
+    let match;
+    while ((match = linkRegex.exec(html)) !== null) {
+      let path = match[1];
+      const displayText = match[2];
+
+      // 跳过返回首页和频道链接
+      if (path === '/' || path.startsWith('http')) {
+        continue;
+      }
+
+      // URL 解码路径
+      try {
+        path = decodeURIComponent(path);
+      } catch (e) {
+        console.error('URL 解码失败:', path, e);
+      }
+
+      // 提取文件名（路径的最后一部分）
+      const pathParts = displayText.split('/');
+      const fileName = pathParts[pathParts.length - 1];
+
+      results.push({
+        name: fileName,
+        path: path,
+      });
+    }
 
     return NextResponse.json({
-      videos,
-      total: result.total,
-      page,
+      videos: results,
+      total: results.length,
     });
   } catch (error) {
+    console.error('小雅搜索失败:', error);
     return NextResponse.json(
       { error: (error as Error).message },
       { status: 500 }

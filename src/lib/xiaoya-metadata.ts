@@ -139,12 +139,45 @@ export async function getXiaoyaMetadata(
     };
   }
 
-  // 优先级 3: 实时搜索 TMDb
+  // 优先级 3: 实时搜索 TMDb（使用文件名）
   if (tmdbApiKey) {
     const fileName = pathParts[pathParts.length - 1];
     const searchQuery = fileName
       .replace(/\.(mp4|mkv|avi|m3u8|flv|ts)$/i, '')
       .replace(/[\[\]()]/g, ' ')
+      .trim();
+
+    // 如果文件名是纯数字（可能带小数点）或者是 SxxExx 格式，跳过文件名搜索，直接使用文件夹名
+    const isPureNumber = /^[\d.]+$/.test(searchQuery);
+    const isSeasonEpisode = /^S\d+E\d+/i.test(searchQuery);
+
+    if (!isPureNumber && !isSeasonEpisode) {
+      const { searchTMDB, getTMDBImageUrl } = await import('./tmdb.search');
+      const tmdbResult = await searchTMDB(tmdbApiKey, searchQuery, tmdbProxy);
+
+      if (tmdbResult.code === 200 && tmdbResult.result) {
+        return {
+          tmdbId: tmdbResult.result.id,
+          title: tmdbResult.result.title || tmdbResult.result.name || folderName,
+          year: tmdbResult.result.release_date?.substring(0, 4) ||
+                tmdbResult.result.first_air_date?.substring(0, 4),
+          rating: tmdbResult.result.vote_average,
+          plot: tmdbResult.result.overview,
+          poster: tmdbResult.result.poster_path
+            ? getTMDBImageUrl(tmdbResult.result.poster_path)
+            : undefined,
+          mediaType: tmdbResult.result.media_type,
+          source: 'tmdb',
+        };
+      }
+    }
+  }
+
+  // 优先级 4: 实时搜索 TMDb（使用文件夹名）
+  if (tmdbApiKey) {
+    const searchQuery = folderName
+      .replace(/[\[\](){}]/g, ' ')
+      .replace(/\d{4}/g, '')
       .trim();
 
     const { searchTMDB, getTMDBImageUrl } = await import('./tmdb.search');
@@ -200,6 +233,7 @@ export async function getXiaoyaEpisodes(
 
     return videoFiles.map(file => {
       const parsed = parseVideoFileName(file.name);
+      console.log('[xiaoya-metadata] 解析文件名:', file.name, '结果:', parsed);
       let title = file.name;
 
       if (parsed.season && parsed.episode) {
@@ -214,11 +248,21 @@ export async function getXiaoyaEpisodes(
       };
     });
   } else {
-    // 电影：只有一个文件
-    const fileName = pathParts[pathParts.length - 1];
-    return [{
-      path: videoPath,
-      title: fileName,
-    }];
+    // 电影：列出同一文件夹下的所有视频
+    const parentDir = pathParts.slice(0, -1).join('/');
+    const listResponse = await xiaoyaClient.listDirectory(`/${parentDir}`);
+
+    const videoExtensions = ['.mp4', '.mkv', '.avi', '.m3u8', '.flv', '.ts', '.mov', '.wmv', '.webm'];
+    const videoFiles = listResponse.content
+      .filter(item =>
+        !item.is_dir &&
+        videoExtensions.some(ext => item.name.toLowerCase().endsWith(ext))
+      )
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    return videoFiles.map(file => ({
+      path: `/${parentDir}/${file.name}`,
+      title: file.name,
+    }));
   }
 }

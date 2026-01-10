@@ -993,6 +993,11 @@ function PlayPageClient() {
                   if (detCacheAge < detCacheMaxAge && data && data.backdrop) {
                     console.log('使用缓存的TMDB详情数据');
                     setTmdbBackdrop(data.backdrop);
+
+                    // 如果没有豆瓣ID，使用TMDb数据补充
+                    if (!videoDoubanId || videoDoubanId === 0) {
+                      populateDoubanFieldsFromTMDB(data);
+                    }
                     return;
                   }
                 } catch (e) {
@@ -1022,6 +1027,11 @@ function PlayPageClient() {
 
         if (result.backdrop) {
           setTmdbBackdrop(result.backdrop);
+
+          // 如果没有豆瓣ID，使用TMDb数据补充
+          if (!videoDoubanId || videoDoubanId === 0) {
+            populateDoubanFieldsFromTMDB(result);
+          }
 
           // 保存title到tmdbId的映射到localStorage（1个月）
           if (result.tmdbId) {
@@ -1056,12 +1066,41 @@ function PlayPageClient() {
       }
     };
 
+    // 辅助函数：使用TMDb数据填充豆瓣字段
+    const populateDoubanFieldsFromTMDB = (tmdbData: any) => {
+      // 设置评分
+      if (tmdbData.rating) {
+        const ratingValue = parseFloat(tmdbData.rating);
+        setDoubanRating({
+          value: ratingValue,
+          count: 0, // TMDb不提供评分人数
+          star_count: Math.round(ratingValue / 2), // 转换为5星制
+        });
+      }
+
+      // 设置年份
+      if (tmdbData.releaseDate) {
+        const year = tmdbData.releaseDate.split('-')[0];
+        setDoubanYear(year);
+      }
+
+      // 设置card_subtitle（使用mediaType和年份）
+      if (tmdbData.mediaType && tmdbData.releaseDate) {
+        const year = tmdbData.releaseDate.split('-')[0];
+        const typeText = tmdbData.mediaType === 'movie' ? '电影' : '电视剧';
+        setDoubanCardSubtitle(`${year} / ${typeText}`);
+      }
+    };
+
     fetchTMDBBackdrop();
-  }, [videoTitle]);
+  }, [videoTitle, videoDoubanId]);
 
 
   // 视频播放地址
   const [videoUrl, setVideoUrl] = useState('');
+
+  // 视频清晰度列表
+  const [videoQualities, setVideoQualities] = useState<Array<{name: string, url: string}>>([]);
 
   // 视频源代理模式状态
   const [sourceProxyMode, setSourceProxyMode] = useState(false);
@@ -1419,6 +1458,21 @@ function PlayPageClient() {
     detailData: SearchResult | null,
     episodeIndex: number
   ) => {
+    // 动态设置 referrer policy：只在小雅源时不发送 Referer
+    const existingMeta = document.querySelector('meta[name="referrer"]');
+    if (detailData?.source === 'xiaoya') {
+      if (!existingMeta) {
+        const meta = document.createElement('meta');
+        meta.name = 'referrer';
+        meta.content = 'no-referrer';
+        document.head.appendChild(meta);
+      }
+    } else {
+      if (existingMeta) {
+        existingMeta.remove();
+      }
+    }
+
     if (
       !detailData ||
       !detailData.episodes ||
@@ -1433,6 +1487,29 @@ function PlayPageClient() {
     }
 
     let newUrl = detailData?.episodes[episodeIndex] || '';
+
+    // 如果是小雅接口，先请求获取真实 URL
+    if (newUrl.startsWith('/api/xiaoya/play')) {
+      try {
+        const response = await fetch(newUrl);
+        const data = await response.json();
+        if (data.url) {
+          newUrl = data.url;
+          // 保存清晰度列表
+          if (data.qualities && data.qualities.length > 0) {
+            setVideoQualities(data.qualities);
+          } else {
+            setVideoQualities([]);
+          }
+        }
+      } catch (error) {
+        console.error('获取小雅播放链接失败:', error);
+        setVideoQualities([]);
+      }
+    } else {
+      // 非小雅源，清空清晰度列表
+      setVideoQualities([]);
+    }
 
     // 检查是否有本地下载的文件
     const hasLocalFile = await checkLocalDownload(currentSource, currentId, episodeIndex);
@@ -3992,10 +4069,17 @@ function PlayPageClient() {
         fastForward: true,
         autoOrientation: true,
         lock: true,
+        ...(videoQualities.length > 0 ? {
+          quality: videoQualities.map((q, index) => ({
+            default: index === 0,
+            html: q.name,
+            url: q.url,
+          })),
+        } : {}),
         moreVideoAttr: {
-          crossOrigin: 'anonymous',
           playsInline: true,
           'webkit-playsinline': 'true',
+          ...(detail?.source === 'xiaoya' ? { referrerpolicy: 'no-referrer' } : {}),
         } as any,
         // HLS 支持配置
         customType: {

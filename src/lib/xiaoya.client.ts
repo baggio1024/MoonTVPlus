@@ -59,7 +59,7 @@ export class XiaoyaClient {
   /**
    * 获取缓存的 Token 或重新登录
    */
-  private async getToken(): Promise<string> {
+  async getToken(): Promise<string> {
     // 如果配置了 Token，直接使用
     if (this.configToken) {
       return this.configToken;

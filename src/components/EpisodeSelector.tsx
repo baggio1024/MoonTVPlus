@@ -683,6 +683,13 @@ const EpisodeSelector: React.FC<EpisodeSelectorProps> = ({
                         if (title.match(/^OVA\s+\d+/i)) {
                           return title;
                         }
+                        // 如果匹配 S01E01 格式，提取并返回
+                        const sxxexxMatch = title.match(/[Ss](\d+)[Ee](\d{1,4}(?:\.\d+)?)/);
+                        if (sxxexxMatch) {
+                          const season = sxxexxMatch[1].padStart(2, '0');
+                          const episode = sxxexxMatch[2];
+                          return `S${season}E${episode}`;
+                        }
                         // 如果匹配"第X集"、"第X话"、"X集"、"X话"格式，提取中间的数字（支持小数）
                         const match = title.match(/(?:第)?(\d+(?:\.\d+)?)(?:集|话)/);
                         if (match) {
