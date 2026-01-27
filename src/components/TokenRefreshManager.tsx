@@ -115,15 +115,21 @@ export function TokenRefreshManager() {
       // 发送请求
       let response = await originalFetch(input, init);
 
-      // 响应拦截：401 错误时刷新 Token 并重试
+      // 响应拦截：401 错误时刷新 Token 并重试（仅重试一次）
       if (response.status === 401 && !isRefreshing) {
         console.log('[Token] Received 401, attempting refresh and retry...');
 
         const refreshed = await refreshToken();
 
         if (refreshed) {
-          // 刷新成功，重试原请求
+          // 刷新成功，重试原请求（仅此一次）
           response = await originalFetch(input, init);
+
+          // 如果重试后仍然是 401，说明有其他问题，不再重试
+          if (response.status === 401) {
+            console.error('[Token] Still 401 after refresh, redirecting to login');
+            window.location.href = `/login?redirect=${encodeURIComponent(window.location.pathname + window.location.search)}`;
+          }
         }
       }
 
