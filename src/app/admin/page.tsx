@@ -43,7 +43,7 @@ import {
   Video,
 } from 'lucide-react';
 import { GripVertical } from 'lucide-react';
-import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { AdminConfig, AdminConfigResult } from '@/lib/admin.types';
@@ -364,6 +364,7 @@ interface DataSource {
   disabled?: boolean;
   from: 'config' | 'custom';
   proxyMode?: boolean;
+  weight?: number;
 }
 
 // 直播源数据类型
@@ -4500,6 +4501,52 @@ const VideoSourceConfig = ({
     });
   };
 
+  const handleUpdateWeight = (key: string, weight: number) => {
+    // 先乐观更新本地状态
+    setSources((prev) =>
+      prev.map((s) =>
+        s.key === key ? { ...s, weight } : s
+      )
+    );
+
+    // 调用API更新
+    withLoading(`updateWeight_${key}`, async () => {
+      try {
+        const response = await fetch('/api/admin/source', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'update_weight',
+            key,
+            weight,
+          }),
+        });
+
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(data.error || `操作失败: ${response.status}`);
+        }
+
+        await refreshConfig();
+      } catch (error) {
+        // 失败时回滚本地状态到配置中的值
+        const originalWeight = config?.SourceConfig?.find(s => s.key === key)?.weight ?? 0;
+        setSources((prev) =>
+          prev.map((s) =>
+            s.key === key ? { ...s, weight: originalWeight } : s
+          )
+        );
+        showError(
+          error instanceof Error ? error.message : '更新权重失败',
+          showAlert
+        );
+        throw error;
+      }
+    }).catch(() => {
+      console.error('操作失败', 'update_weight', key, weight);
+    });
+  };
+
   const handleAddSource = () => {
     if (!newSource.name || !newSource.key || !newSource.api) return;
     withLoading('addSource', async () => {
@@ -4726,8 +4773,48 @@ const VideoSourceConfig = ({
     }
   };
 
+  // 权重输入组件 - 使用本地状态避免输入时失焦
+  const WeightInput = memo(({ sourceKey, initialWeight }: { sourceKey: string; initialWeight: number }) => {
+    const [localWeight, setLocalWeight] = useState(initialWeight);
+
+    // 当外部权重变化时同步
+    useEffect(() => {
+      setLocalWeight(initialWeight);
+    }, [initialWeight]);
+
+    return (
+      <input
+        type='number'
+        inputMode='numeric'
+        min='0'
+        max='100'
+        value={localWeight}
+        onChange={(e) => {
+          const value = parseInt(e.target.value) || 0;
+          const clampedValue = Math.min(100, Math.max(0, value));
+          setLocalWeight(clampedValue);
+        }}
+        onBlur={(e) => {
+          const newValue = parseInt(e.target.value) || 0;
+          const clampedValue = Math.min(100, Math.max(0, newValue));
+          const originalWeight = config?.SourceConfig?.find(s => s.key === sourceKey)?.weight ?? 0;
+
+          // 只有在值发生变化时才调用API
+          if (clampedValue !== originalWeight) {
+            handleUpdateWeight(sourceKey, clampedValue);
+          }
+        }}
+        onPointerDown={(e) => e.stopPropagation()}
+        onTouchStart={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        className='w-16 px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-transparent'
+        title='权重范围：0-100，用于排序和优选评分'
+      />
+    );
+  });
+
   // 可拖拽行封装 (dnd-kit)
-  const DraggableRow = ({ source }: { source: DataSource }) => {
+  const DraggableRow = memo(({ source }: { source: DataSource }) => {
     const { attributes, listeners, setNodeRef, transform, transition } =
       useSortable({ id: source.key });
 
@@ -4812,6 +4899,9 @@ const VideoSourceConfig = ({
             />
           </button>
         </td>
+        <td className='px-6 py-4 whitespace-nowrap' style={{ touchAction: 'auto' }}>
+          <WeightInput sourceKey={source.key} initialWeight={source.weight ?? 0} />
+        </td>
         <td className='px-6 py-4 whitespace-nowrap max-w-[1rem]'>
           {(() => {
             const status = getValidationStatus(source.key);
@@ -4864,7 +4954,7 @@ const VideoSourceConfig = ({
         </td>
       </tr>
     );
-  };
+  });
 
   // 全选/取消全选
   const handleSelectAll = useCallback(
@@ -5194,6 +5284,9 @@ const VideoSourceConfig = ({
               </th>
               <th className='px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider'>
                 代理模式
+              </th>
+              <th className='px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider'>
+                权重
               </th>
               <th className='px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider'>
                 有效性
@@ -11197,8 +11290,12 @@ function AdminPageClient() {
       setRole(data.Role);
     } catch (err) {
       const msg = err instanceof Error ? err.message : '获取配置失败';
-      showError(msg, showAlert);
-      setError(msg);
+      // 只在首次加载时设置错误状态，避免弹窗和错误页面同时显示
+      if (showLoading) {
+        setError(msg);
+      } else {
+        showError(msg, showAlert);
+      }
     } finally {
       if (showLoading) {
         setLoading(false);
@@ -11331,8 +11428,42 @@ function AdminPageClient() {
   }
 
   if (error) {
-    // 错误已通过弹窗展示，此处直接返回空
-    return null;
+    // 显示无权限提示页面
+    return (
+      <PageLayout activePath='/admin'>
+        <div className='min-h-screen flex items-center justify-center px-4'>
+          <div className='max-w-md w-full'>
+            <div className='bg-white dark:bg-gray-800 rounded-lg shadow-lg p-8 text-center'>
+              <div className='mb-6'>
+                <div className='mx-auto w-16 h-16 bg-red-100 dark:bg-red-900/20 rounded-full flex items-center justify-center'>
+                  <AlertCircle className='w-8 h-8 text-red-600 dark:text-red-400' />
+                </div>
+              </div>
+              <h2 className='text-2xl font-bold text-gray-900 dark:text-gray-100 mb-4'>
+                无权限访问
+              </h2>
+              <p className='text-gray-600 dark:text-gray-400 mb-6'>
+                {error}
+              </p>
+              <div className='space-y-3'>
+                <button
+                  onClick={() => window.location.href = '/'}
+                  className='w-full px-6 py-3 bg-blue-600 hover:bg-blue-700 dark:bg-blue-600 dark:hover:bg-blue-700 text-white rounded-lg font-medium transition-colors'
+                >
+                  返回首页
+                </button>
+                <button
+                  onClick={() => window.location.href = '/login'}
+                  className='w-full px-6 py-3 bg-gray-600 hover:bg-gray-700 dark:bg-gray-600 dark:hover:bg-gray-700 text-white rounded-lg font-medium transition-colors'
+                >
+                  重新登录
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </PageLayout>
+    );
   }
 
   return (
