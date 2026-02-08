@@ -18,3 +18,5 @@ database_id = "6d273a74-5ce4-47c6-b211-422b3403b4e5"
 [vars]
 NODE_ENV = "production"
 BUILD_TARGET = "cloudflare"
+ENABLE_TVBOX_SUBSCRIBE = true
+TVBOX_SUBSCRIBE_TOKEN = "cloudflare"
