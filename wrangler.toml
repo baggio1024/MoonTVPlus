@@ -7,6 +7,7 @@ main = ".open-next/worker.js"
 # Cloudflare Workers Assets 用于服务静态文件
 [assets]
 directory = ".open-next/assets"
+minify = true
 binding = "ASSETS"
 
 # D1 数据库绑定
